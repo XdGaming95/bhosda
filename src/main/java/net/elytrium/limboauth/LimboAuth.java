@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 - 2024 Elytrium
+ * Copyright (C) 2021 - 2025 Elytrium
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -93,6 +93,7 @@ import net.elytrium.limboapi.api.file.WorldFile;
 import net.elytrium.limboauth.command.ChangePasswordCommand;
 import net.elytrium.limboauth.command.DestroySessionCommand;
 import net.elytrium.limboauth.command.ForceChangePasswordCommand;
+import net.elytrium.limboauth.command.ForceLoginCommand;
 import net.elytrium.limboauth.command.ForceRegisterCommand;
 import net.elytrium.limboauth.command.ForceUnregisterCommand;
 import net.elytrium.limboauth.command.LimboAuthCommand;
@@ -108,6 +109,7 @@ import net.elytrium.limboauth.event.TaskEvent;
 import net.elytrium.limboauth.floodgate.FloodgateApiHolder;
 import net.elytrium.limboauth.handler.AuthSessionHandler;
 import net.elytrium.limboauth.listener.AuthListener;
+import net.elytrium.limboauth.listener.BackendEndpointsListener;
 import net.elytrium.limboauth.model.RegisteredPlayer;
 import net.elytrium.limboauth.model.SQLRuntimeException;
 import net.kyori.adventure.text.Component;
@@ -135,7 +137,7 @@ import org.slf4j.Logger;
 )
 public class LimboAuth {
 
-  public static final Ratelimiter RATELIMITER = Ratelimiters.createWithMilliseconds(5000);
+  public static final Ratelimiter<InetAddress> RATELIMITER = Ratelimiters.createWithMilliseconds(5000);
 
   // Architectury API appends /541f59e4256a337ea252bc482a009d46 to the channel name, that is a UUID.nameUUIDFromBytes from the TokenMessage class name
   private static final ChannelIdentifier MOD_CHANNEL = MinecraftChannelIdentifier.create("limboauth", "mod/541f59e4256a337ea252bc482a009d46");
@@ -163,6 +165,7 @@ public class LimboAuth {
   private final File configFile;
   private final LimboFactory factory;
   private final FloodgateApiHolder floodgateApi;
+  private final Map<String, AuthSessionHandler> authenticatingPlayers;
 
   @Nullable
   private Component loginPremium;
@@ -196,6 +199,7 @@ public class LimboAuth {
     this.dataDirectoryFile = dataDirectory.toFile();
     this.configFile = new File(this.dataDirectoryFile, "config.yml");
 
+    this.authenticatingPlayers = new ConcurrentHashMap<>();
     this.factory = (LimboFactory) this.server.getPluginManager().getPlugin("limboapi").flatMap(PluginContainer::getInstance).orElseThrow();
 
     if (this.server.getPluginManager().getPlugin("floodgate").isPresent()) {
@@ -347,6 +351,7 @@ public class LimboAuth {
     CommandManager manager = this.server.getCommandManager();
     manager.unregister("unregister");
     manager.unregister("forceregister");
+    manager.unregister("forcelogin");
     manager.unregister("premium");
     manager.unregister("forceunregister");
     manager.unregister("changepassword");
@@ -357,6 +362,7 @@ public class LimboAuth {
 
     manager.register("unregister", new UnregisterCommand(this, this.playerDao), "unreg");
     manager.register("forceregister", new ForceRegisterCommand(this, this.playerDao), "forcereg");
+    manager.register("forcelogin", new ForceLoginCommand(this));
     manager.register("premium", new PremiumCommand(this, this.playerDao), "license");
     manager.register("forceunregister", new ForceUnregisterCommand(this, this.server, this.playerDao), "forceunreg");
     manager.register("changepassword", new ChangePasswordCommand(this, this.playerDao), "changepass", "cp");
@@ -405,6 +411,11 @@ public class LimboAuth {
     EventManager eventManager = this.server.getEventManager();
     eventManager.unregisterListeners(this);
     eventManager.register(this, new AuthListener(this, this.playerDao, this.floodgateApi));
+    if (Settings.IMP.MAIN.BACKEND_API.ENABLED) {
+      eventManager.register(this, new BackendEndpointsListener(this));
+    } else {
+      this.server.getChannelRegistrar().unregister(BackendEndpointsListener.API_CHANNEL);
+    }
 
     if (this.purgeCacheTask != null) {
       this.purgeCacheTask.cancel();
@@ -735,8 +746,8 @@ public class LimboAuth {
       }
 
       return new PremiumResponse(PremiumState.ERROR);
-    } catch (IOException | InterruptedException e) {
-      LOGGER.error("Unable to authenticate with Mojang.", e);
+    } catch (Throwable t) {
+      LOGGER.error("Unable to authenticate with Mojang.", t);
       return new PremiumResponse(PremiumState.ERROR);
     }
   }
@@ -802,19 +813,24 @@ public class LimboAuth {
     UUID uuid = null;
 
     for (Function<String, PremiumResponse> function : functions) {
-      PremiumResponse check = function.apply(lowercaseNickname);
+      PremiumResponse check;
+      try {
+        check = function.apply(lowercaseNickname);
+      } catch (Throwable t) {
+        check = new PremiumResponse(PremiumState.ERROR);
+        LOGGER.error("Unable to check player account state.", t);
+      }
+
       if (check.getUuid() != null) {
         uuid = check.getUuid();
       }
 
       switch (check.getState()) {
         case CRACKED: {
-          return this.setPremium(lowercaseNickname, false).isPremium();
+          return this.setPremiumCacheLowercased(lowercaseNickname, false).isPremium();
         }
         case PREMIUM: {
-          CachedPremiumUser premiumUser = this.setPremium(lowercaseNickname, true);
-          premiumUser.setForcePremium(true);
-          return premiumUser.isPremium();
+          return this.setForcedPremiumCacheLowercased(lowercaseNickname, true).isPremium();
         }
         case PREMIUM_USERNAME: {
           premium = true;
@@ -838,9 +854,7 @@ public class LimboAuth {
 
     if (unknown) {
       if (uuid != null && this.isPremiumUuid(uuid)) {
-        CachedPremiumUser premiumUser = this.setPremium(lowercaseNickname, true);
-        premiumUser.setForcePremium(true);
-        return premiumUser.isPremium();
+        return this.setForcedPremiumCacheLowercased(lowercaseNickname, true).isPremium();
       }
 
       if (Settings.IMP.MAIN.ONLINE_MODE_NEED_AUTH) {
@@ -856,7 +870,7 @@ public class LimboAuth {
       return Settings.IMP.MAIN.ON_SERVER_ERROR_PREMIUM;
     }
 
-    return this.setPremium(lowercaseNickname, true).isPremium();
+    return this.setPremiumCacheLowercased(lowercaseNickname, true).isPremium();
   }
 
   public boolean isPremium(String nickname) {
@@ -875,7 +889,13 @@ public class LimboAuth {
     return this.premiumCache.get(nickname.toLowerCase(Locale.ROOT));
   }
 
-  public CachedPremiumUser setPremium(String lowercasedNickname, boolean value) {
+  public CachedPremiumUser setForcedPremiumCacheLowercased(String lowercasedNickname, boolean value) {
+    CachedPremiumUser premiumUser = this.setPremiumCacheLowercased(lowercasedNickname, value);
+    premiumUser.setForcePremium(value);
+    return premiumUser;
+  }
+
+  public CachedPremiumUser setPremiumCacheLowercased(String lowercasedNickname, boolean value) {
     CachedPremiumUser premiumUser = new CachedPremiumUser(System.currentTimeMillis(), value);
     this.premiumCache.put(lowercasedNickname, premiumUser);
     return premiumUser;
@@ -957,6 +977,22 @@ public class LimboAuth {
 
   public Pattern getNicknameValidationPattern() {
     return this.nicknameValidationPattern;
+  }
+
+  public void addAuthenticatingPlayer(String nickname, AuthSessionHandler handler) {
+    this.authenticatingPlayers.put(nickname, handler);
+  }
+
+  public void removeAuthenticatingPlayer(String nickname) {
+    this.authenticatingPlayers.remove(nickname);
+  }
+
+  public AuthSessionHandler getAuthenticatingPlayer(String nickname) {
+    return this.authenticatingPlayers.get(nickname);
+  }
+
+  public Map<String, AuthSessionHandler> getAuthenticatingPlayers() {
+    return this.authenticatingPlayers;
   }
 
   public static class CachedUser {
@@ -1049,6 +1085,7 @@ public class LimboAuth {
       this.uuid = uuid;
     }
 
+    @SuppressFBWarnings("CT_CONSTRUCTOR_THROW")
     public PremiumResponse(PremiumState state, String uuid) {
       this.state = state;
       if (uuid.contains("-")) {
