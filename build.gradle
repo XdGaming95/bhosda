@@ -4,17 +4,17 @@ plugins {
     id("java")
     id("checkstyle")
     id("maven-publish")
-    id("com.github.spotbugs").version("5.0.14")
-    id("org.cadixdev.licenser").version("0.6.1")
-    id("com.github.johnrengelman.shadow").version("7.1.2")
+    id("com.github.spotbugs").version("6.4.8")
+    id("net.minecraftforge.licenser").version("1.2.0")
+    id("com.gradleup.shadow").version("9.6.1")
 }
 
 setGroup("net.elytrium")
-setVersion("1.1.14")
+setVersion("1.1.15")
 
 java {
-    setSourceCompatibility(JavaVersion.VERSION_17)
-    setTargetCompatibility(JavaVersion.VERSION_17)
+    setSourceCompatibility(JavaVersion.VERSION_25)
+    setTargetCompatibility(JavaVersion.VERSION_25)
 }
 
 compileJava {
@@ -30,15 +30,11 @@ repositories {
     }
     maven {
         setName("papermc-repo")
-        setUrl("https://papermc.io/repo/repository/maven-public/")
+        setUrl("https://repo.papermc.io/repository/maven-public/")
     }
     maven {
         setName("opencollab-snapshot")
         setUrl("https://repo.opencollab.dev/maven-snapshots")
-    }
-    maven() {
-        setName("sonatype-snapshots-repo")
-        setUrl("https://s01.oss.sonatype.org/content/repositories/snapshots/")
     }
 }
 
@@ -51,7 +47,7 @@ dependencies {
 
     compileOnly("com.velocitypowered:velocity-api:$velocityVersion")
     annotationProcessor("com.velocitypowered:velocity-api:$velocityVersion")
-    compileOnly("com.velocitypowered:velocity-proxy:$velocityVersion") // From Elytrium Repo.
+    compileOnly("com.velocitypowered:velocity-proxy:$velocityProxyVersion") // From Elytrium Repo.
 
     // Needs for some velocity methods.
     compileOnly("io.netty:netty-codec:$nettyVersion")
@@ -185,8 +181,8 @@ publishing {
 javadoc {
     getOptions().setEncoding("UTF-8")
     getOptions().setCharSet("UTF-8")
-    getOptions().setSource("11")
-    getOptions().links("https://docs.oracle.com/en/java/javase/11/docs/api/")
+    getOptions().setSource("25")
+    getOptions().links("https://docs.oracle.com/en/java/javase/25/docs/api/")
 
     // Remove "undefined" from search paths when generating javadoc for a non-modular project. (JDK-8215291)
     if (JavaVersion.current() == JavaVersion.VERSION_11) {

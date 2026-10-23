@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 - 2024 Elytrium
+ * Copyright (C) 2021 - 2025 Elytrium
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -17,12 +17,14 @@
 
 package net.elytrium.limboauth;
 
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.util.List;
 import java.util.Random;
+import java.util.concurrent.ThreadLocalRandom;
 import net.elytrium.commons.config.ConfigSerializer;
 import net.elytrium.commons.config.YamlConfig;
 import net.elytrium.commons.kyori.serialization.Serializers;
@@ -79,10 +81,11 @@ public class Settings extends YamlConfig {
     })
     public boolean ONLINE_MODE_NEED_AUTH = true;
     @Comment({
-        "WARNING: This is semi-experimental feature.",
-        "Disable to allow offline-mode players using online-mode usernames",
-        "If you disable it, be sure that online-mode players still can be offline-mode as there",
-        "are no proper way to see if the player is joining via online-mode enabled client."
+        "WARNING: its experimental feature, so disable only if you really know what you are doing",
+        "When enabled, this option will keep default 'online-mode-need-auth' behavior",
+        "When disabled, this option will disable premium authentication for unregistered players if they fail it once,",
+        "allowing offline-mode players to use online-mode usernames",
+        "Does nothing when enabled, but when disabled require 'save-premium-accounts: true', 'online-mode-need-auth: false' and 'purge_premium_cache_millis > 100000'"
     })
     public boolean ONLINE_MODE_NEED_AUTH_STRICT = true;
     @Comment("Needs floodgate plugin if disabled.")
@@ -307,6 +310,30 @@ public class Settings extends YamlConfig {
     }
 
     @Create
+    public Settings.MAIN.BACKEND_API BACKEND_API;
+
+    public static class BACKEND_API {
+
+      @Comment({
+          "Should backend API be enabled?",
+          "Required for PlaceholderAPI expansion to work (https://github.com/UserNugget/LimboAuth-Expansion)"
+      })
+      public boolean ENABLED = false;
+
+      @Comment("Backend API token")
+      public String TOKEN = Long.toString(ThreadLocalRandom.current().nextLong(Long.MAX_VALUE), 36);
+
+      @Comment({
+          "Available endpoints:",
+          " premium_state, hash, totp_token, login_date, reg_date, token_issued_at,",
+          " uuid, premium_uuid, ip, login_ip, token_issued_at"
+      })
+      public List<String> ENABLED_ENDPOINTS = List.of(
+          "premium_state", "login_date", "reg_date", "uuid", "premium_uuid", "token_issued_at"
+      );
+    }
+
+    @Create
     public MAIN.COMMAND_PERMISSION_STATE COMMAND_PERMISSION_STATE;
 
     @Comment({
@@ -331,6 +358,8 @@ public class Settings extends YamlConfig {
       public CommandPermissionState FORCE_CHANGE_PASSWORD = CommandPermissionState.PERMISSION;
       @Comment("Permission: limboauth.admin.forceregister")
       public CommandPermissionState FORCE_REGISTER = CommandPermissionState.PERMISSION;
+      @Comment("Permission: limboauth.admin.forcelogin")
+      public CommandPermissionState FORCE_LOGIN = CommandPermissionState.PERMISSION;
       @Comment("Permission: limboauth.admin.forceunregister")
       public CommandPermissionState FORCE_UNREGISTER = CommandPermissionState.PERMISSION;
       @Comment("Permission: limboauth.admin.reload")
@@ -452,6 +481,10 @@ public class Settings extends YamlConfig {
       public String FORCE_REGISTER_SUCCESSFUL = "{PRFX} &aSuccessfully registered player &6{0}&a!";
       public String FORCE_REGISTER_NOT_SUCCESSFUL = "{PRFX} &cUnable to register player &6{0}&c.";
 
+      public String FORCE_LOGIN_USAGE = "{PRFX} Usage: &6/forcelogin <nickname>";
+      public String FORCE_LOGIN_SUCCESSFUL = "{PRFX} &aSuccessfully authenticated &6{0}&a!";
+      public String FORCE_LOGIN_UNKNOWN_PLAYER = "{PRFX} &cUnable to find authenticating player with username &6{0}&a!";
+
       public String TOTP = "{PRFX} Please, enter your 2FA key using &6/2fa <key>";
       @Comment(value = "Can be empty.", at = Comment.At.SAME_LINE)
       public String TOTP_TITLE = "{PRFX}";
@@ -496,6 +529,7 @@ public class Settings extends YamlConfig {
     private final Random random;
     private String originalValue;
 
+    @SuppressFBWarnings("CT_CONSTRUCTOR_THROW")
     public MD5KeySerializer() throws NoSuchAlgorithmException {
       super(byte[].class, String.class);
       this.md5 = MessageDigest.getInstance("MD5");

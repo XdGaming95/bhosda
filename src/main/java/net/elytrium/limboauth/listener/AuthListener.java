@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 - 2024 Elytrium
+ * Copyright (C) 2021 - 2025 Elytrium
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -23,6 +23,7 @@ import com.velocitypowered.api.event.PostOrder;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.connection.PostLoginEvent;
 import com.velocitypowered.api.event.connection.PreLoginEvent;
+import com.velocitypowered.api.event.connection.PreLoginEvent.PreLoginComponentResult;
 import com.velocitypowered.api.event.player.GameProfileRequestEvent;
 import com.velocitypowered.api.proxy.InboundConnection;
 import com.velocitypowered.api.util.UuidUtils;
@@ -45,6 +46,7 @@ import net.elytrium.limboauth.floodgate.FloodgateApiHolder;
 import net.elytrium.limboauth.handler.AuthSessionHandler;
 import net.elytrium.limboauth.model.RegisteredPlayer;
 import net.elytrium.limboauth.model.SQLRuntimeException;
+import net.kyori.adventure.text.Component;
 
 // TODO: Customizable events priority
 public class AuthListener {
@@ -55,57 +57,70 @@ public class AuthListener {
   private final LimboAuth plugin;
   private final Dao<RegisteredPlayer, String> playerDao;
   private final FloodgateApiHolder floodgateApi;
+  private final Component errorOccurred;
 
   public AuthListener(LimboAuth plugin, Dao<RegisteredPlayer, String> playerDao, FloodgateApiHolder floodgateApi) {
     this.plugin = plugin;
     this.playerDao = playerDao;
     this.floodgateApi = floodgateApi;
+
+    this.errorOccurred = LimboAuth.getSerializer().deserialize(Settings.IMP.MAIN.STRINGS.ERROR_OCCURRED);
   }
 
-  @Subscribe
+  @Subscribe(order = PostOrder.LATE)
   public void onPreLoginEvent(PreLoginEvent event) {
-    String username = event.getUsername();
-    if (!event.getResult().isForceOfflineMode()) {
-      if (this.plugin.isPremium(username)) {
-        event.setResult(PreLoginEvent.PreLoginComponentResult.forceOnlineMode());
+    // Ignore this event if it is was denied by other plugin
+    if (!event.getResult().isAllowed()) {
+      return;
+    }
 
-        try {
-          if (!Settings.IMP.MAIN.ONLINE_MODE_NEED_AUTH_STRICT) {
-            CachedPremiumUser premiumUser = this.plugin.getPremiumCache(username);
-            MinecraftConnection connection = this.getConnection(event.getConnection());
-            if (!connection.isClosed() && premiumUser != null && !premiumUser.isForcePremium()
-                && this.plugin.isPremiumInternal(username).getState() == PremiumState.UNKNOWN) {
-              this.plugin.getPendingLogins().add(username);
+    try {
+      String username = event.getUsername();
+      if (!event.getResult().isForceOfflineMode()) {
+        if (this.plugin.isPremium(username)) {
+          event.setResult(PreLoginEvent.PreLoginComponentResult.forceOnlineMode());
 
-              // As Velocity doesnt have any events for our usecase, just inject into netty
-              connection.getChannel().closeFuture().addListener(future -> {
-                // Player has failed premium verfication client-side, mark as offline-mode
-                if (this.plugin.getPendingLogins().remove(username)) {
-                  this.plugin.setPremium(username.toLowerCase(Locale.ROOT), false);
-                }
-              });
+          try {
+            if (!Settings.IMP.MAIN.ONLINE_MODE_NEED_AUTH_STRICT) {
+              CachedPremiumUser premiumUser = this.plugin.getPremiumCache(username);
+              MinecraftConnection connection = this.getConnection(event.getConnection());
+              if (!connection.isClosed() && premiumUser != null && !premiumUser.isForcePremium()
+                  && this.plugin.isPremiumInternal(username.toLowerCase(Locale.ROOT)).getState() == PremiumState.UNKNOWN) {
+                this.plugin.getPendingLogins().add(username);
+
+                // As Velocity doesnt have any events for our usecase, just inject into netty
+                connection.getChannel().closeFuture().addListener(future -> {
+                  // Player has failed premium verfication client-side, mark as offline-mode
+                  if (this.plugin.getPendingLogins().remove(username)) {
+                    this.plugin.setPremiumCacheLowercased(username.toLowerCase(Locale.ROOT), false);
+                  }
+                });
+              }
             }
+          } catch (Throwable throwable) {
+            throw new IllegalStateException("failed to track authentication process", throwable);
           }
-        } catch (Throwable throwable) {
-          throw new IllegalStateException("failed to track authentication process", throwable);
+        } else {
+          event.setResult(PreLoginEvent.PreLoginComponentResult.forceOfflineMode());
         }
       } else {
-        event.setResult(PreLoginEvent.PreLoginComponentResult.forceOfflineMode());
-      }
-    } else {
-      try {
-        MinecraftConnection connection = this.getConnection(event.getConnection());
-        if (!connection.isClosed()) {
-          this.plugin.saveForceOfflineMode(username);
+        try {
+          MinecraftConnection connection = this.getConnection(event.getConnection());
+          if (!connection.isClosed()) {
+            this.plugin.saveForceOfflineMode(username);
 
-          // As Velocity doesnt have any events for our usecase, just inject into netty
-          connection.getChannel().closeFuture().addListener(future -> {
-            this.plugin.unsetForcedPreviously(username);
-          });
+            // As Velocity doesnt have any events for our usecase, just inject into netty
+            connection.getChannel().closeFuture().addListener(future -> {
+              this.plugin.unsetForcedPreviously(username);
+            });
+          }
+        } catch (Throwable throwable) {
+          throw new IllegalStateException("failed to track client disconnection", throwable);
         }
-      } catch (Throwable throwable) {
-        throw new IllegalStateException("failed to track client disconnection", throwable);
       }
+    } catch (Throwable throwable) {
+      event.setResult(PreLoginComponentResult.denied(this.errorOccurred));
+      throw throwable;
     }
   }
 
