@@ -17,7 +17,7 @@ Test server: [``ely.su``](https://hotmc.ru/minecraft-server-203216)
 ## Requirements
 
 - **Velocity 4.x** (tested on 4.3.0) — Velocity 4 requires **Java 25**, so the proxy (and this plugin) must run on Java 25 or newer.
-- **LimboAPI 1.1.27+** (the first LimboAPI release built against Velocity 4).
+- **LimboAPI 1.1.27+** — a copy of LimboAPI updated for Velocity 4.3.0 lives in [`limboapi/`](limboapi/) in this repository; build it with `cd limboapi && ./gradlew build`.
 
 ### Building
 
